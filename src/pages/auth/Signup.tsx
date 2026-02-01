@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Button, Input } from '@/components/ui'
-import { setStoredUser } from '@/lib/auth'
+import { signUp } from '@/lib/auth'
 import toast from 'react-hot-toast'
 
 function passwordStrength(p: string): number {
@@ -30,6 +30,7 @@ export function Signup() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
+    
     if (!acceptTerms) {
       setError('Please accept the terms.')
       return
@@ -42,12 +43,24 @@ export function Signup() {
       setError('Use a stronger password (8+ chars, mix of letters and numbers).')
       return
     }
+    
+    if (!email.trim()) {
+      setError('Email is required.')
+      return
+    }
+
     setLoading(true)
-    await new Promise((r) => setTimeout(r, 600))
-    setStoredUser({ id: '1', name: name.trim() || email.split('@')[0], email: email.trim() })
-    toast.success('Account created.')
-    setLoading(false)
-    navigate('/app/dashboard', { replace: true })
+    try {
+      await signUp(name.trim(), email.trim(), password)
+      toast.success('Account created successfully.')
+      navigate('/app/dashboard', { replace: true })
+    } catch (err: any) {
+      const errorMessage = err.message || 'Failed to create account. Please try again.'
+      setError(errorMessage)
+      toast.error(errorMessage)
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (

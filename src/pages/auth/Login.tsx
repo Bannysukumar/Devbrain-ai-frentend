@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { Button, Input } from '@/components/ui'
-import { setStoredUser } from '@/lib/auth'
+import { signIn } from '@/lib/auth'
 import toast from 'react-hot-toast'
 
 export function Login() {
@@ -15,17 +15,24 @@ export function Login() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError('')
-    setLoading(true)
-    await new Promise((r) => setTimeout(r, 600))
+    
     if (!email.trim() || !password) {
       setError('Email and password are required.')
-      setLoading(false)
       return
     }
-    setStoredUser({ id: '1', name: email.split('@')[0], email: email.trim() })
-    toast.success('Logged in.')
-    setLoading(false)
-    navigate('/app/dashboard', { replace: true })
+
+    setLoading(true)
+    try {
+      await signIn(email.trim(), password)
+      toast.success('Logged in successfully.')
+      navigate('/app/dashboard', { replace: true })
+    } catch (err: any) {
+      const errorMessage = err.message || 'Failed to log in. Please check your credentials.'
+      setError(errorMessage)
+      toast.error(errorMessage)
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (

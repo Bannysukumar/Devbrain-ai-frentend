@@ -1,6 +1,8 @@
+import { useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ProtectedRoute } from '@/components/ProtectedRoute'
+import { onAuthStateChange } from '@/lib/auth'
 
 import { MarketingLayout } from '@/layouts/MarketingLayout'
 import { AuthLayout } from '@/layouts/AuthLayout'
@@ -43,6 +45,15 @@ import { NotFound } from '@/pages/errors/NotFound'
 import { ServerError } from '@/pages/errors/ServerError'
 
 function App() {
+  // Set up Firebase auth state listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChange(() => {
+      // Auth state changes are handled automatically
+      // This keeps localStorage in sync with Firebase auth state
+    })
+    return () => unsubscribe()
+  }, [])
+
   return (
     <ErrorBoundary>
       <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import { Button } from '@/components/ui'
-import { getStoredUser, setStoredUser, isAdmin } from '@/lib/auth'
+import { getStoredUser, setStoredUser, isAdmin, logOut } from '@/lib/auth'
 import { getTheme, toggleTheme } from '@/lib/theme'
 import { useAppMode } from '@/context/AppModeContext'
 import { hasApiBaseUrl } from '@/adapters'
@@ -47,11 +47,19 @@ export function AppLayout() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
-  const handleLogout = () => {
-    setStoredUser(null)
-    setUser(null)
-    setProfileOpen(false)
-    navigate('/auth/login')
+  const handleLogout = async () => {
+    try {
+      await logOut()
+      setUser(null)
+      setProfileOpen(false)
+      navigate('/auth/login')
+    } catch (error) {
+      // Even if logout fails, clear local state and redirect
+      setStoredUser(null)
+      setUser(null)
+      setProfileOpen(false)
+      navigate('/auth/login')
+    }
   }
 
   if (isProductionNoApi) {
