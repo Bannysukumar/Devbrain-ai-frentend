@@ -18,7 +18,7 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
         id: firebaseUser.uid,
         name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
         email: firebaseUser.email || '',
-        avatar: firebaseUser.photoURL,
+        avatar: firebaseUser.photoURL || undefined,
       })
     } else {
       setUser(storedUser)
