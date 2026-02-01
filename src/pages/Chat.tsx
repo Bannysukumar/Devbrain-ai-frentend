@@ -4,7 +4,7 @@ import axios from 'axios'
 import { motion } from 'framer-motion'
 import { useAppMode } from '@/context/AppModeContext'
 import { useDataAdapter } from '@/adapters/useDataAdapter'
-import { getToolTypeFromConnector, type SourceWithToolType } from '@/api/types'
+import { getToolTypeFromConnector, type SourceWithToolType, type Document } from '@/api/types'
 import { suggestedChatQuestions } from '@/data/demoDataset'
 import { ToolTypeBadge } from '@/components/ToolTypeBadge'
 import toast from 'react-hot-toast'
@@ -23,13 +23,16 @@ interface StoredConversation {
   sourceNames: string[]
 }
 
-function computeConfidence(sourceCount: number, responseLength: number, lastContent: string): number {
+function computeConfidence(sourceCount: number, responseLength: number, lastContent: string, evidenceCount: number = 0): number {
   const lowInfoPhrases = /not enough|don't have|no information|i don't know|cannot find|no sources/i
-  if (lowInfoPhrases.test(lastContent) || (sourceCount === 0 && lastContent.length < 50)) return Math.min(20, 10 + responseLength / 10)
+  if (lowInfoPhrases.test(lastContent) || (sourceCount === 0 && lastContent.length < 50) || evidenceCount === 0) {
+    return Math.min(30, 10 + responseLength / 10 + evidenceCount * 2)
+  }
   let score = 20
-  if (sourceCount > 0) score += Math.min(40, sourceCount * 15)
-  if (responseLength > 100) score += 20
-  if (responseLength > 300) score += 20
+  if (sourceCount > 0) score += Math.min(30, sourceCount * 10)
+  if (evidenceCount > 0) score += Math.min(40, evidenceCount * 10) // Evidence is a strong signal
+  if (responseLength > 100) score += 15
+  if (responseLength > 300) score += 15
   return Math.min(100, Math.round(score))
 }
 
@@ -46,6 +49,7 @@ export function Chat() {
   const [selectedSourceNames, setSelectedSourceNames] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [citationModal, setCitationModal] = useState<{ title: string; content: string; url?: string } | null>(null)
+  const [expandedEvidence, setExpandedEvidence] = useState<Set<number>>(new Set())
   const [conversations, setConversations] = useState<StoredConversation[]>(() => {
     try {
       const raw = localStorage.getItem(CONVERSATIONS_KEY)
@@ -84,6 +88,8 @@ export function Chat() {
       setMessages([])
       setSelectedSourceNames([])
     }
+    // Clear expanded evidence when switching conversations
+    setExpandedEvidence(new Set())
   }, [activeId, conversations])
 
   const saveConversations = (next: StoredConversation[]) => {
@@ -134,6 +140,37 @@ export function Chat() {
     setMessages(nextMessages)
     setLoading(true)
 
+    // Step 1: Run unifiedSearch to fetch evidence before calling chat
+    let evidence: Document[] = []
+    try {
+      const sourcesToSearch = selectedSourceNames.length > 0 
+        ? selectedSourceNames 
+        : sourcesWithType.map((s) => s.name).slice(0, 10) // Limit to 10 sources for performance
+      
+      if (sourcesToSearch.length > 0) {
+        const searchResults = await adapter.unifiedSearch(text, sourcesToSearch, 5)
+        // Flatten results and get top 5 documents sorted by score (highest first)
+        // Keep track of source name for each document (store in metadata)
+        const allDocs: Document[] = []
+        Object.entries(searchResults).forEach(([sourceName, docs]) => {
+          docs.forEach((doc) => {
+            allDocs.push({ 
+              ...doc, 
+              metadata: { ...doc.metadata, _sourceName: sourceName } 
+            })
+          })
+        })
+        // Sort by score (higher is better) and take top 5
+        evidence = allDocs
+          .sort((a, b) => (b.score ?? 0) - (a.score ?? 0))
+          .slice(0, 5)
+      }
+    } catch (err) {
+      console.warn('Failed to fetch evidence:', err)
+      // Continue even if evidence fetch fails
+    }
+
+    // Step 2: Call chat API
     const payload: CreateChatPayload = {
       sources: selectedSourceNames.length > 0 ? selectedSourceNames : undefined,
       messages: nextMessages,
@@ -146,7 +183,13 @@ export function Chat() {
       const displayContent = noInfo
         ? 'Not enough information in knowledge base. Add more sources or rephrase your question.'
         : assistantContent
-      const assistantMsg: ChatMessage = { role: 'assistant', content: displayContent }
+      
+      // Include evidence in assistant message
+      const assistantMsg: ChatMessage = { 
+        role: 'assistant', 
+        content: displayContent,
+        evidence: evidence.length > 0 ? evidence : undefined
+      }
       const finalMessages = [...nextMessages, assistantMsg]
       setMessages(finalMessages)
 
@@ -194,11 +237,12 @@ export function Chat() {
 
   const lastAssistantMessage = [...messages].reverse().find((m) => m.role === 'assistant')
   const sourcesUsed = selectedSourceNames.length > 0 ? selectedSourceNames : (sourcesWithType.map((s) => s.name).slice(0, 5))
+  const evidenceCount = lastAssistantMessage?.evidence?.length ?? 0
   const confidence = lastAssistantMessage
-    ? computeConfidence(sourcesUsed.length, lastAssistantMessage.content.length, lastAssistantMessage.content)
+    ? computeConfidence(sourcesUsed.length, lastAssistantMessage.content.length, lastAssistantMessage.content, evidenceCount)
     : null
   const notEnoughInfo = lastAssistantMessage
-    ? isNotEnoughInfo(lastAssistantMessage.content, sourcesUsed.length)
+    ? isNotEnoughInfo(lastAssistantMessage.content, sourcesUsed.length) || evidenceCount === 0
     : false
 
   const exportAnswerAudit = () => {
@@ -312,24 +356,132 @@ export function Chat() {
               )}
             </div>
           )}
-          {messages.map((m, i) => (
-            <motion.div
-              key={i}
-              initial={{ opacity: 0, y: 8 }}
-              animate={{ opacity: 1, y: 0 }}
-              className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}
-            >
-              <div
-                className={`max-w-[85%] rounded-2xl px-4 py-2.5 ${
-                  m.role === 'user'
-                    ? 'bg-[var(--accent-primary)]/20 text-[var(--text-primary)]'
-                    : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)]'
-                }`}
+          {messages.map((m, i) => {
+            const hasEvidence = m.role === 'assistant' && m.evidence && m.evidence.length > 0
+            const isExpanded = expandedEvidence.has(i)
+            const topEvidence = hasEvidence ? m.evidence![0] : null
+            const noEvidence = m.role === 'assistant' && (!m.evidence || m.evidence.length === 0)
+            
+            return (
+              <motion.div
+                key={i}
+                initial={{ opacity: 0, y: 8 }}
+                animate={{ opacity: 1, y: 0 }}
+                className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}
               >
-                <p className="text-sm whitespace-pre-wrap">{m.content}</p>
-              </div>
-            </motion.div>
-          ))}
+                <div
+                  className={`max-w-[85%] rounded-2xl px-4 py-2.5 ${
+                    m.role === 'user'
+                      ? 'bg-[var(--accent-primary)]/20 text-[var(--text-primary)]'
+                      : noEvidence
+                      ? 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--warning)]/30'
+                      : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)]'
+                  }`}
+                >
+                  <p className="text-sm whitespace-pre-wrap">{m.content}</p>
+                  
+                  {noEvidence && (
+                    <p className="text-xs text-[var(--warning)] mt-2 italic">
+                      ⚠️ Not enough evidence found in knowledge base
+                    </p>
+                  )}
+                </div>
+                
+                {hasEvidence && (
+                  <div className="max-w-[85%] mt-2 space-y-2">
+                    <div className="flex gap-2 flex-wrap">
+                      {topEvidence && (
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => window.open(topEvidence.url, '_blank', 'noopener,noreferrer')}
+                          className="text-xs"
+                        >
+                          🔗 Open Top Source
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => {
+                          const next = new Set(expandedEvidence)
+                          if (isExpanded) {
+                            next.delete(i)
+                          } else {
+                            next.add(i)
+                          }
+                          setExpandedEvidence(next)
+                        }}
+                        className="text-xs"
+                      >
+                        {isExpanded ? '▼ Hide Evidence' : '▶ View Evidence'} ({m.evidence!.length})
+                      </Button>
+                    </div>
+                    
+                    {isExpanded && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: 'auto' }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="bg-[var(--bg-secondary)] border border-[var(--border)] rounded-xl p-3 space-y-3"
+                      >
+                        <h4 className="text-xs font-semibold text-[var(--text-primary)] uppercase tracking-wide">
+                          Evidence Sources
+                        </h4>
+                        <div className="space-y-2">
+                          {m.evidence!.map((doc, docIdx) => {
+                            // Get source name from document metadata (stored when flattening)
+                            const sourceName = (doc.metadata as any)?._sourceName || 'Unknown'
+                            const source = sourcesWithType.find((s) => s.name === sourceName)
+                            const snippet = doc.content.slice(0, 120) + (doc.content.length > 120 ? '...' : '')
+                            
+                            return (
+                              <motion.div
+                                key={doc.id || docIdx}
+                                initial={{ opacity: 0, x: -8 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                transition={{ delay: docIdx * 0.05 }}
+                                className="border border-[var(--border)] rounded-lg p-3 hover:bg-[var(--bg-tertiary)] transition-colors"
+                              >
+                                <div className="flex items-start justify-between gap-2 mb-2">
+                                  <div className="flex-1 min-w-0">
+                                    <h5 className="text-sm font-medium text-[var(--text-primary)] truncate">
+                                      {doc.title || 'Untitled'}
+                                    </h5>
+                                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                      {source && <ToolTypeBadge toolType={source.toolType} />}
+                                      <span className="text-xs text-[var(--text-muted)]">{sourceName}</span>
+                                      {doc.score !== undefined && (
+                                        <span className="text-xs px-1.5 py-0.5 rounded bg-[var(--accent-primary)]/20 text-[var(--accent-primary)]">
+                                          Score: {doc.score.toFixed(2)}
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                </div>
+                                <p className="text-xs text-[var(--text-secondary)] mb-2 line-clamp-2">
+                                  {snippet}
+                                </p>
+                                <a
+                                  href={doc.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-xs text-[var(--accent-primary)] hover:underline truncate block"
+                                  onClick={(e) => e.stopPropagation()}
+                                >
+                                  🔗 {doc.url}
+                                </a>
+                              </motion.div>
+                            )
+                          })}
+                        </div>
+                      </motion.div>
+                    )}
+                  </div>
+                )}
+              </motion.div>
+            )
+          })}
           {loading && (
             <div className="flex justify-start">
               <div className="rounded-2xl px-4 py-2.5 bg-[var(--bg-tertiary)] text-[var(--text-muted)] text-sm">

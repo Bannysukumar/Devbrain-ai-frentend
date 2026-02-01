@@ -122,6 +122,7 @@ export interface Task {
 export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
+  evidence?: Document[] // Frontend-only: evidence sources from unifiedSearch
 }
 
 export interface CreateChatPayload {
